@@ -22,7 +22,6 @@ export class TufRepository {
     private remoteUrl: string | null = null;
 
     constructor(baseUrl: string = METADATA_BASE_URL, remoteUrl: string | null = null) {
-        // We'll just use direct file access instead of fetch
         this.tufClient = null;
         this.remoteUrl = remoteUrl;
     }
@@ -54,55 +53,97 @@ export class TufRepository {
         try {
             // Implement the TUF client workflow for remote fetching
             const rootData = await this.fetchLatestRoot();
-            const rootSigned = Root.fromJSON(rootData.signed);
-            this.rootMetadata = new Metadata<Root>(
-                rootSigned,
-                this.convertSignatures(rootData.signatures)
-            );
+            if (!rootData || !rootData.signed) throw new Error('Could not find any valid root metadata');
+
+            try {
+                const rootSigned = Root.fromJSON(rootData.signed);
+                this.rootMetadata = new Metadata<Root>(
+                    rootSigned,
+                    this.convertSignatures(rootData.signatures)
+                );
+            } catch (e) {
+                console.error("Error parsing root metadata:", e);
+                throw new Error("Invalid root metadata format");
+            }
 
             // Fetch timestamp.json (always latest)
-            const timestampData = await this.fetchJsonMetadata('timestamp.json');
-            const timestampSigned = Timestamp.fromJSON(timestampData.signed);
-            this.timestampMetadata = new Metadata<Timestamp>(
-                timestampSigned,
-                this.convertSignatures(timestampData.signatures)
-            );
+            const timestampData = await this.fetchJsonMetadata('timestamp.json').catch(() => null);
+            if (timestampData && timestampData.signed) {
+                try {
+                    const timestampSigned = Timestamp.fromJSON(timestampData.signed);
+                    this.timestampMetadata = new Metadata<Timestamp>(
+                        timestampSigned,
+                        this.convertSignatures(timestampData.signatures)
+                    );
+                } catch (e) {
+                    console.error("Error parsing timestamp metadata:", e);
+                }
+            }
 
-            // Get the snapshot version from timestamp
-            // Access as plain object since tufjs model might not expose the meta property correctly
-            const timestampObj = timestampData.signed as any;
-            const snapshotInfo = timestampObj.meta?.['snapshot.json'];
-            const snapshotVersion = snapshotInfo?.version;
-            
-            // Fetch the specified snapshot version
-            const snapshotFileName = snapshotVersion ? `${snapshotVersion}.snapshot.json` : 'snapshot.json';
-            const snapshotData = await this.fetchJsonMetadata(snapshotFileName);
-            const snapshotSigned = Snapshot.fromJSON(snapshotData.signed);
-            this.snapshotMetadata = new Metadata<Snapshot>(
-                snapshotSigned,
-                this.convertSignatures(snapshotData.signatures)
-            );
+            // Fetch snapshot.json
+            let snapshotData = null;
+            if (this.timestampMetadata) {
+                // Use a robust way to get raw data to avoid Proxy/Map/Library specific structure issues
+                const rawSigned = JSON.parse(JSON.stringify(this.timestampMetadata.signed));
+                const snapshotInfo = rawSigned.meta?.['snapshot.json'] || rawSigned.meta?.snapshot || rawSigned.snapshot;
+                const snapshotVersion = snapshotInfo?.version;
+                
+                if (snapshotVersion) {
+                    const snapshotFileName = `${snapshotVersion}.snapshot.json`;
+                    snapshotData = await this.fetchJsonMetadata(snapshotFileName).catch(() => null);
+                }
+            }
 
-            // Get the targets version from snapshot
-            // Access as plain object since tufjs model might not expose the meta property correctly
-            const snapshotObj = snapshotData.signed as any;
-            const targetsInfo = snapshotObj.meta?.['targets.json'];
-            const targetsVersion = targetsInfo?.version;
-            
-            // Fetch the specified targets version
-            const targetsFileName = targetsVersion ? `${targetsVersion}.targets.json` : 'targets.json';
-            const targetsData = await this.fetchJsonMetadata(targetsFileName);
-            const targetsSigned = Targets.fromJSON(targetsData.signed);
-            this.targetsMetadata = new Metadata<Targets>(
-                targetsSigned,
-                this.convertSignatures(targetsData.signatures)
-            );
+            if (!snapshotData) {
+                snapshotData = await this.fetchJsonMetadata('snapshot.json', false).catch(() => null);
+            }
 
-            // Fetch delegated targets if they exist in the snapshot metadata
+            if (snapshotData && snapshotData.signed) {
+                try {
+                    const snapshotSigned = Snapshot.fromJSON(snapshotData.signed);
+                    this.snapshotMetadata = new Metadata<Snapshot>(
+                        snapshotSigned,
+                        this.convertSignatures(snapshotData.signatures)
+                    );
+                } catch (e) {
+                    console.error("Error parsing snapshot metadata:", e);
+                }
+            }
+
+            // Fetch targets.json
+            let targetsData = null;
+            if (this.snapshotMetadata) {
+                // Use a robust way to get raw data
+                const rawSigned = JSON.parse(JSON.stringify(this.snapshotMetadata.signed));
+                const targetsInfo = rawSigned.meta?.['targets.json'] || rawSigned.meta?.targets || rawSigned.targets;
+                const targetsVersion = targetsInfo?.version;
+                
+                if (targetsVersion) {
+                    const targetsFileName = `${targetsVersion}.targets.json`;
+                    targetsData = await this.fetchJsonMetadata(targetsFileName).catch(() => null);
+                }
+            }
+
+            if (!targetsData) {
+                targetsData = await this.fetchJsonMetadata('targets.json', false).catch(() => null);
+            }
+
+            if (targetsData && targetsData.signed) {
+                try {
+                    const targetsSigned = Targets.fromJSON(targetsData.signed);
+                    this.targetsMetadata = new Metadata<Targets>(
+                        targetsSigned,
+                        this.convertSignatures(targetsData.signatures)
+                    );
+                } catch (e) {
+                    console.error("Error parsing targets metadata:", e);
+                }
+            }
+
             await this.loadDelegatedTargetsFromRemote();
         } catch (error) {
-            console.error("Error loading remote TUF metadata:", error);
-            throw new Error(`Failed to load remote TUF metadata: ${error instanceof Error ? error.message : String(error)}`);
+            console.error("Failed to load remote TUF metadata:", error);
+            if (!this.rootMetadata) throw error;
         }
     }
     
@@ -360,86 +401,39 @@ export class TufRepository {
                 throw new Error('Remote URL not provided');
             }
 
-            // First try direct access
-            let url = new URL(fileName, this.remoteUrl).toString();
-            console.log(`Fetching metadata from: ${url}`);
+            const url = new URL(fileName, this.remoteUrl).toString();
             
             try {
                 const response = await fetch(url, { 
-                    next: { revalidate: 0 }, // Don't cache the response
+                    next: { revalidate: 0 },
                     headers: {
                         'Accept': 'application/json'
                     }
                 });
                 
                 if (response.ok) {
-                    const data = await response.json();
-                    console.log(`Successfully fetched ${fileName} from ${url}`);
-                    return data;
+                    return await response.json();
                 }
                 
-                // If we got a CORS error or other issue, try using the proxy
-                console.warn(`Failed to fetch ${fileName} from ${url}: ${response.status} ${response.statusText}`);
-                
-                // Try the proxy
-                const parsedUrl = new URL(this.remoteUrl);
+                // If not OK, attempt via proxy route if it exists
                 const proxyUrl = `/api/tuf-metadata?url=${encodeURIComponent(this.remoteUrl)}&file=${encodeURIComponent(fileName)}`;
+                const proxyResponse = await fetch(proxyUrl, { next: { revalidate: 0 } });
                 
-                console.log(`Trying proxy: ${proxyUrl}`);
-                
-                const proxyResponse = await fetch(proxyUrl, {
-                    next: { revalidate: 0 }
-                });
-                
-                if (!proxyResponse.ok) {
-                    if (throwOnError) {
-                        throw new Error(`Failed to fetch ${fileName} through proxy: ${proxyResponse.status} ${proxyResponse.statusText}`);
-                    } else {
-                        return null;
-                    }
+                if (proxyResponse.ok) {
+                    return await proxyResponse.json();
                 }
-                
-                const data = await proxyResponse.json();
-                console.log(`Successfully fetched ${fileName} through proxy`);
-                return data;
+
+                if (throwOnError) {
+                    throw new Error(`Failed to fetch ${fileName}: ${response.status} ${response.statusText}`);
+                }
+                return null;
             } catch (error) {
-                console.warn(`Error fetching ${fileName} from ${url}:`, error);
-                
-                // Try another proxy approach - direct fetch might fail due to CORS
-                const fallbackProxyUrl = `/proxy/${new URL(url).host}${new URL(url).pathname}`;
-                console.log(`Trying fallback proxy: ${fallbackProxyUrl}`);
-                
-                try {
-                    const fallbackResponse = await fetch(fallbackProxyUrl, {
-                        next: { revalidate: 0 }
-                    });
-                    
-                    if (!fallbackResponse.ok) {
-                        if (throwOnError) {
-                            throw new Error(`Failed to fetch ${fileName} through fallback proxy: ${fallbackResponse.status} ${fallbackResponse.statusText}`);
-                        } else {
-                            return null;
-                        }
-                    }
-                    
-                    const data = await fallbackResponse.json();
-                    console.log(`Successfully fetched ${fileName} through fallback proxy`);
-                    return data;
-                } catch (fallbackError) {
-                    if (throwOnError) {
-                        throw new Error(`Failed to fetch ${fileName} through all methods: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
-                    } else {
-                        return null;
-                    }
-                }
-            }
-        } catch (error) {
-            console.error(`Error fetching metadata file ${fileName}:`, error);
-            if (throwOnError) {
-                throw error;
-            } else {
+                if (throwOnError) throw error;
                 return null;
             }
+        } catch (error) {
+            if (throwOnError) throw error;
+            return null;
         }
     }
 
@@ -710,12 +704,8 @@ function formatExpirationDate(dateString: string): string {
 
 export const createTufRepository = async (remoteUrl?: string): Promise<TufRepository> => {
     try {
-        // Create a new TUF repository instance
         const repository = new TufRepository(METADATA_BASE_URL, remoteUrl);
-        
-        // Initialize the repository
         await repository.initialize();
-        
         return repository;
     } catch (error) {
         console.error('Error creating TUF repository:', error);

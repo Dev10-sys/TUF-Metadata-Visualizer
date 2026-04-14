@@ -112,7 +112,11 @@ export default function RoleTable({ roles }: RoleTableProps) {
 
 
     if (!roles || roles.length === 0) {
-        return <div>No roles found.</div>;
+        return (
+            <div style={{ padding: '2rem', textAlign: 'center', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px dashed var(--border)' }}>
+                <p style={{ color: 'var(--fg-subtle)' }}>No TUF roles found in this repository.</p>
+            </div>
+        );
     }
 
     // Find the targets role

@@ -12,13 +12,12 @@ interface HomeProps {
 export default async function Home({ searchParams }: HomeProps) {
     try {
         // Check if a remote URL is provided in the search params
-        const remoteUrl = searchParams.url;
+        // Otherwise use the environment variable as a fallback
+        const defaultRemoteUrl = process.env.NEXT_PUBLIC_RSTUF_API || 'http://localhost:80/api/v1/metadata/';
+        const remoteUrl = searchParams.url || defaultRemoteUrl;
         
-        // If no URL is provided and we know metadata folder is missing,
-        // show empty state with the UI to allow URL input
+        // If no URL is provided (neither in params nor in env), show input box
         if (!remoteUrl) {
-            // Return the client component with empty data
-            // This will show the input box for remote URL
             return <TufViewerClient 
                 roles={[]} 
                 version={process.env.VERSION || '0.1.0'} 

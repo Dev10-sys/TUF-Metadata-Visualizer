@@ -128,6 +128,17 @@ const TreeNodeComponent: React.FC<{ node: TreeNodeType, level: number, expandTop
 };
 
 const TreeView: React.FC<TreeViewProps> = ({ treeData, title, expandTopLevel = false }) => {
+  if (!treeData || treeData.length === 0) {
+    return (
+      <TreeContainer>
+        {title && <h3>{title}</h3>}
+        <div style={{ padding: '1rem', color: 'var(--fg-subtle)', fontStyle: 'italic' }}>
+          No hierarchical data available to display.
+        </div>
+      </TreeContainer>
+    );
+  }
+
   return (
     <TreeContainer>
       {title && <h3>{title}</h3>}

@@ -1,16 +1,12 @@
 'use client';
 
 import React from 'react';
-import { GlobalStyle } from './styles/global';
 import { Header, Container, Title, Footer, GitHubLink, HeaderContent } from './styles/components';
+import { GlobalStyle } from './styles/global';
 import StyledComponentsRegistry from './registry';
 import { FaGithub } from 'react-icons/fa';
 
-export default function ClientLayout({
-    children,
-}: {
-    children: React.ReactNode;
-}) {
+export default function ClientLayout({ children }: { children: React.ReactNode }) {
     return (
         <StyledComponentsRegistry>
             <GlobalStyle />
@@ -39,4 +35,4 @@ export default function ClientLayout({
             </Footer>
         </StyledComponentsRegistry>
     );
-} 
+}

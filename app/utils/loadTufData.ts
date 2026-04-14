@@ -8,52 +8,26 @@ import path from 'path';
 // Function to load TUF data
 export async function loadTufData(remoteUrl?: string): Promise<{ roles: RoleInfo[], version: string, error: string | null }> {
     try {
-        // Check for metadata directory if no remoteUrl provided
-        if (!remoteUrl) {
-            const metadataDir = path.join(process.cwd(), 'public', 'metadata');
-            if (!fs.existsSync(metadataDir)) {
-                return { 
-                    roles: [], 
-                    version: process.env.VERSION || '0.1.0', 
-                    error: `Metadata directory not found. Please provide a remote URL or create a directory at ${metadataDir}`
-                };
-            }
-        } else {
-            // Validate the remote URL format
-            try {
-                // Test URL by attempting to fetch timestamp.json
-                const testUrl = new URL('timestamp.json', remoteUrl).toString();
-                const response = await fetch(testUrl, { next: { revalidate: 0 } });
-                
-                if (!response.ok) {
-                    return {
-                        roles: [],
-                        version: process.env.VERSION || '0.1.0',
-                        error: `Failed to fetch timestamp.json from ${remoteUrl}: ${response.status} ${response.statusText}`
-                    };
-                }
-            } catch (urlError) {
-                return {
-                    roles: [],
-                    version: process.env.VERSION || '0.1.0',
-                    error: `Invalid URL or network error: ${urlError instanceof Error ? urlError.message : String(urlError)}`
-                };
-            }
-        }
+        const effectiveUrl = remoteUrl || process.env.NEXT_PUBLIC_RSTUF_API || 'http://localhost:80/api/v1/metadata/';
         
-        const repository = await createTufRepository(remoteUrl);
+        // Ensure effectiveUrl ends with /
+        const formattedUrl = effectiveUrl.endsWith('/') ? effectiveUrl : `${effectiveUrl}/`;
+        
+        const repository = await createTufRepository(formattedUrl);
         const roles = repository.getRoleInfo();
+        const version = process.env.VERSION || '1.0.0';
         
-        // Get version for display
-        const version = process.env.VERSION || '0.1.0';
-        
+        if (roles.length === 0) {
+            return { roles: [], version, error: "Empty repository metadata." };
+        }
+
         return { roles, version, error: null };
     } catch (error) {
         console.error('Error loading TUF data:', error);
         return { 
             roles: [], 
             version: process.env.VERSION || '0.1.0', 
-            error: error instanceof Error ? error.message : String(error) 
+            error: `Failed to connect to TUF API: ${error instanceof Error ? error.message : String(error)}` 
         };
     }
 }
@@ -124,81 +98,37 @@ export async function getAvailableRootVersions(remoteUrl?: string): Promise<{ ve
 async function getRemoteRootVersions(remoteUrl: string): Promise<{ version: number; path: string }[]> {
     try {
         const rootVersions: { version: number; path: string }[] = [];
-        
-        // First try to fetch timestamp.json to get latest metadata
-        let url = new URL('timestamp.json', remoteUrl).toString();
+        let url = new URL('root.json', remoteUrl).toString();
         let response = await fetch(url, { next: { revalidate: 0 } });
-        
-        if (!response.ok) {
-            throw new Error(`Failed to fetch timestamp.json: ${response.status} ${response.statusText}`);
-        }
-        
-        // Try to discover root versions by attempting requests
-        // Start with unversioned root.json
-        url = new URL('root.json', remoteUrl).toString();
-        response = await fetch(url, { next: { revalidate: 0 } });
         
         if (response.ok) {
             const rootData = await response.json();
             if (rootData.signed && typeof rootData.signed.version === 'number') {
-                rootVersions.push({
-                    version: rootData.signed.version,
-                    path: url
-                });
+                rootVersions.push({ version: rootData.signed.version, path: url });
             }
         }
         
-        // Find all available versioned roots
-        // This is a simplistic approach - in a real implementation we'd 
-        // follow the TUF spec more precisely for discovering versions
         let version = 1;
-        const maxAttempts = 100; // Prevent infinite loops
-        
-        for (let i = 0; i < maxAttempts; i++) {
+        while (version < 100) {
             url = new URL(`${version}.root.json`, remoteUrl).toString();
-            
             try {
                 response = await fetch(url, { next: { revalidate: 0 } });
-                
                 if (response.ok) {
-                    const rootData = await response.json();
-                    if (rootData.signed && typeof rootData.signed.version === 'number') {
-                        rootVersions.push({
-                            version: rootData.signed.version,
-                            path: url
-                        });
+                    const data = await response.json();
+                    if (data.signed?.version === version) {
+                        rootVersions.push({ version, path: url });
                     }
                     version++;
                 } else {
-                    // If we get a 404, try the next version format
-                    const altUrl = new URL(`root.${version}.json`, remoteUrl).toString();
-                    response = await fetch(altUrl, { next: { revalidate: 0 } });
-                    
-                    if (response.ok) {
-                        const rootData = await response.json();
-                        if (rootData.signed && typeof rootData.signed.version === 'number') {
-                            rootVersions.push({
-                                version: rootData.signed.version,
-                                path: altUrl
-                            });
-                        }
-                    } else {
-                        // If we've tried both formats and no file exists, we've probably reached the end
-                        break;
-                    }
-                    version++;
+                    break;
                 }
-            } catch (error) {
-                console.error(`Error fetching root version ${version}:`, error);
-                // Keep trying the next version
-                version++;
+            } catch {
+                break;
             }
         }
         
-        // Sort by version (descending)
         return rootVersions.sort((a, b) => b.version - a.version);
     } catch (error) {
-        console.error('Error getting remote root versions:', error);
         return [];
     }
 }
